@@ -182,7 +182,7 @@ class PacMan:
 			pygame.draw.circle(screen, YELLOW, (center_x, center_y), radius)
 
 class Ghost:
-	def __init__(self, x, y, color, personality="aggressive"):
+	def __init__(self, x, y, color, personality="aggressive", ghost_id=0):
 		self.x = x
 		self.y = y
 		self.start_x = x
@@ -192,6 +192,7 @@ class Ghost:
 		self.direction = random.choice([UP, DOWN, LEFT, RIGHT])
 		self.move_timer = 0
 		self.personality = personality
+		self.ghost_id = ghost_id  # For spreading behavior
 		self.stuck_counter = 0
 		self.last_position = (x, y)
 		self.vulnerable = False
@@ -204,6 +205,7 @@ class Ghost:
 		self.target_corner = None
 		self.scatter_timer = 0
 		self.mode = "chase"  # chase, scatter, or frightened
+		self.spread_offset = ghost_id * 3  # Each ghost gets different spread behavior
 
 	def set_vulnerable(self, duration):
 		self.vulnerable = True
@@ -226,6 +228,7 @@ class Ghost:
 				self.mode = "chase"
 
 	def reset_after_eaten(self):
+		# Improved reset logic to prevent disappearing
 		self.x = self.start_x
 		self.y = self.start_y
 		self.eaten = False
@@ -234,6 +237,8 @@ class Ghost:
 		self.vulnerable_timer = 0
 		self.color = self.original_color
 		self.mode = "chase"
+		self.stuck_counter = 0
+		self.last_position = (self.x, self.y)
 
 	def reset_position(self):
 		"""Reset ghost to starting position"""
@@ -245,6 +250,8 @@ class Ghost:
 		self.returning_home = False
 		self.color = self.original_color
 		self.mode = "chase"
+		self.stuck_counter = 0
+		self.last_position = (self.x, self.y)
 
 	def get_corner_target(self):
 		"""Get corner target based on personality"""
@@ -268,6 +275,14 @@ class Ghost:
 			return tunnel_distance + dy
 
 		return dx + dy
+
+	def get_other_ghost_positions(self, all_ghosts):
+		"""Get positions of other ghosts for avoidance"""
+		positions = []
+		for ghost in all_ghosts:
+			if ghost.ghost_id != self.ghost_id:
+				positions.append((ghost.x, ghost.y))
+		return positions
 
 	def find_path_to_target(self, maze, target_x, target_y):
 		"""Advanced BFS pathfinding with caching and tunnel support"""
@@ -335,6 +350,49 @@ class Ghost:
 				valid_moves.append((dx, dy))
 		return valid_moves
 
+	def get_spread_target(self, pacman_x, pacman_y, other_ghost_positions):
+		"""Calculate a spread-out target to avoid clustering"""
+		# Base target around Pac-Man with personality-based offset
+		if self.personality == "aggressive":
+			# Direct approach but slightly offset
+			target_x = pacman_x + self.spread_offset - 2
+			target_y = pacman_y
+		elif self.personality == "ambush":
+			# Approach from different angles
+			target_x = pacman_x + (4 if self.ghost_id % 2 == 0 else -4)
+			target_y = pacman_y + (2 if self.ghost_id < 2 else -2)
+		elif self.personality == "patrol":
+			# Circle around Pac-Man
+			angle = (self.ghost_id * 90 + self.scatter_timer) % 360
+			target_x = pacman_x + int(6 * math.cos(math.radians(angle)))
+			target_y = pacman_y + int(6 * math.sin(math.radians(angle)))
+		else:  # unpredictable
+			# Random positions around Pac-Man
+			offset_x = random.choice([-5, -3, 3, 5])
+			offset_y = random.choice([-5, -3, 3, 5])
+			target_x = pacman_x + offset_x
+			target_y = pacman_y + offset_y
+
+		# Avoid other ghosts by adjusting target
+		for ghost_x, ghost_y in other_ghost_positions:
+			distance = abs(target_x - ghost_x) + abs(target_y - ghost_y)
+			if distance < 3:  # Too close to another ghost
+				# Push away from the other ghost
+				if target_x < ghost_x:
+					target_x -= 2
+				else:
+					target_x += 2
+				if target_y < ghost_y:
+					target_y -= 2
+				else:
+					target_y += 2
+
+		# Clamp to maze bounds
+		target_x = max(1, min(18, target_x))
+		target_y = max(1, min(19, target_y))
+
+		return target_x, target_y
+
 	def predict_pacman_position(self, pacman_x, pacman_y, pacman_direction, steps=4):
 		"""Predict where Pac-Man will be in 'steps' moves"""
 		predicted_x = pacman_x + pacman_direction[0] * steps
@@ -366,8 +424,8 @@ class Ghost:
 				self.mode = "chase"
 				self.scatter_timer = 0
 
-	def choose_smart_move(self, maze, pacman_x, pacman_y, pacman_direction):
-		"""Ultra-smart movement with advanced AI behaviors"""
+	def choose_smart_move(self, maze, pacman_x, pacman_y, pacman_direction, all_ghosts):
+		"""Ultra-smart movement with improved spreading and no disappearing"""
 		valid_moves = self.get_valid_moves(maze)
 		if not valid_moves:
 			return (0, 0)
@@ -375,18 +433,30 @@ class Ghost:
 		# Update ghost mode
 		self.update_mode()
 
-		# If eaten, return to start position
+		# If eaten, return to start position - IMPROVED LOGIC
 		if self.eaten or self.returning_home:
+			# Check if we're at home position
+			if abs(self.x - self.start_x) <= 1 and abs(self.y - self.start_y) <= 1:
+				self.reset_after_eaten()  # Properly reset when home
+				return (0, 0)
+
+			# Find path home
 			path = self.find_path_to_target(maze, self.start_x, self.start_y)
 			if path and len(path) > 0:
 				return path[0]
 			else:
-				self.reset_after_eaten()
-				return (0, 0)
+				# Fallback if pathfinding fails
+				dx = 1 if self.start_x > self.x else -1 if self.start_x < self.x else 0
+				dy = 1 if self.start_y > self.y else -1 if self.start_y < self.y else 0
+				if (dx, dy) in valid_moves:
+					return (dx, dy)
+				return random.choice(valid_moves)
 
-		# If vulnerable (frightened mode), run away intelligently
+		# Get other ghost positions for spreading
+		other_ghost_positions = self.get_other_ghost_positions(all_ghosts)
+
+		# If vulnerable (frightened mode), run away intelligently with spreading
 		if self.vulnerable:
-			# Find the move that maximizes distance from Pac-Man
 			best_move = None
 			max_distance = -1
 
@@ -400,14 +470,21 @@ class Ghost:
 					elif new_x >= len(maze[0]):
 						new_x = 0
 
-				distance = self.calculate_distance(new_x, new_y, pacman_x, pacman_y)
+				distance_to_pacman = self.calculate_distance(new_x, new_y, pacman_x, pacman_y)
 
-				# Prefer moves that lead to corners or open areas
+				# Avoid other ghosts bonus
+				ghost_avoidance_bonus = 0
+				for ghost_x, ghost_y in other_ghost_positions:
+					ghost_distance = abs(new_x - ghost_x) + abs(new_y - ghost_y)
+					if ghost_distance > 3:
+						ghost_avoidance_bonus += 2
+
+				# Prefer corners when vulnerable
 				corner_bonus = 0
 				if new_x <= 2 or new_x >= 17 or new_y <= 2 or new_y >= 18:
 					corner_bonus = 5
 
-				total_score = distance + corner_bonus
+				total_score = distance_to_pacman + corner_bonus + ghost_avoidance_bonus
 
 				if total_score > max_distance:
 					max_distance = total_score
@@ -416,89 +493,120 @@ class Ghost:
 			if best_move:
 				return best_move
 
-		# Scatter mode - head to corners
+		# Scatter mode - head to corners with spreading
 		if self.mode == "scatter":
 			corner_x, corner_y = self.get_corner_target()
+			# Add some randomness to prevent exact clustering
+			corner_x += random.randint(-2, 2)
+			corner_y += random.randint(-2, 2)
+			corner_x = max(1, min(18, corner_x))
+			corner_y = max(1, min(19, corner_y))
+
 			path = self.find_path_to_target(maze, corner_x, corner_y)
 			if path and len(path) > 0:
 				return path[0]
 
-		# Chase mode - advanced personality-based behavior
+		# Chase mode - IMPROVED with better spreading
 		if self.mode == "chase":
+			# Get spread target instead of direct Pac-Man position
+			target_x, target_y = self.get_spread_target(pacman_x, pacman_y, other_ghost_positions)
+
 			if self.personality == "aggressive":
-				# Red ghost - direct pursuit with slight prediction
-				predicted_x, predicted_y = self.predict_pacman_position(
-					pacman_x, pacman_y, pacman_direction, 2)
-				path = self.find_path_to_target(maze, predicted_x, predicted_y)
+				# Red ghost - direct but spread approach
+				path = self.find_path_to_target(maze, target_x, target_y)
 				if path and len(path) > 0:
 					return path[0]
 
 			elif self.personality == "ambush":
-				# Pink ghost - ambush 4-6 spaces ahead
-				steps = random.randint(4, 6)
+				# Pink ghost - predictive ambush with spreading
 				predicted_x, predicted_y = self.predict_pacman_position(
-					pacman_x, pacman_y, pacman_direction, steps)
+					pacman_x, pacman_y, pacman_direction, 4 + self.spread_offset)
+
+				# Adjust prediction to avoid other ghosts
+				for ghost_x, ghost_y in other_ghost_positions:
+					if abs(predicted_x - ghost_x) + abs(predicted_y - ghost_y) < 3:
+						predicted_x += 3 if predicted_x > 10 else -3
+						predicted_y += 2 if predicted_y > 10 else -2
+
 				path = self.find_path_to_target(maze, predicted_x, predicted_y)
 				if path and len(path) > 0:
 					return path[0]
 
 			elif self.personality == "patrol":
-				# Cyan ghost - complex behavior based on red ghost position and Pac-Man
+				# Cyan ghost - circling behavior with better spreading
 				distance_to_pacman = self.calculate_distance(self.x, self.y, pacman_x, pacman_y)
 
 				if distance_to_pacman > 8:
-					# Far away - chase aggressively
-					path = self.find_path_to_target(maze, pacman_x, pacman_y)
+					# Far away - approach but maintain spread
+					path = self.find_path_to_target(maze, target_x, target_y)
 					if path and len(path) > 0:
 						return path[0]
 				else:
-					# Close - patrol in a pattern or retreat
-					if random.random() < 0.7:
-						# Patrol behavior - target opposite side of Pac-Man
-						target_x = 19 - pacman_x if pacman_x < 10 else pacman_x // 2
-						target_y = 19 - pacman_y if pacman_y < 10 else pacman_y // 2
+					# Close - maintain patrol pattern
+					patrol_x = target_x
+					patrol_y = target_y
+					path = self.find_path_to_target(maze, patrol_x, patrol_y)
+					if path and len(path) > 0:
+						return path[0]
+
+			elif self.personality == "unpredictable":
+				# Orange ghost - truly unpredictable with spreading
+				distance_to_pacman = self.calculate_distance(self.x, self.y, pacman_x, pacman_y)
+
+				if distance_to_pacman > 8:
+					# Far away - approach spread target
+					path = self.find_path_to_target(maze, target_x, target_y)
+					if path and len(path) > 0:
+						return path[0]
+				else:
+					# Close - be truly unpredictable
+					if random.random() < 0.3:
+						# Sometimes approach anyway
 						path = self.find_path_to_target(maze, target_x, target_y)
 						if path and len(path) > 0:
 							return path[0]
-
-			elif self.personality == "unpredictable":
-				# Orange ghost - switches between aggressive and avoidance
-				distance_to_pacman = self.calculate_distance(self.x, self.y, pacman_x, pacman_y)
-
-				if distance_to_pacman > 8:
-					# Far away - chase
-					path = self.find_path_to_target(maze, pacman_x, pacman_y)
-					if path and len(path) > 0:
-						return path[0]
-				else:
-					# Close - be unpredictable (30% chase, 70% avoid/wander)
-					if random.random() < 0.3:
-						# Sometimes chase anyway
-						path = self.find_path_to_target(maze, pacman_x, pacman_y)
-						if path and len(path) > 0:
-							return path[0]
 					else:
-						# Avoid or wander
-						corner_x, corner_y = self.get_corner_target()
-						path = self.find_path_to_target(maze, corner_x, corner_y)
-						if path and len(path) > 0:
-							return path[0]
+						# Random movement with ghost avoidance
+						best_moves = []
+						for dx, dy in valid_moves:
+							new_x, new_y = self.x + dx, self.y + dy
+							avoid_ghosts = True
+							for ghost_x, ghost_y in other_ghost_positions:
+								if abs(new_x - ghost_x) + abs(new_y - ghost_y) < 2:
+									avoid_ghosts = False
+									break
+							if avoid_ghosts:
+								best_moves.append((dx, dy))
 
-		# Fallback: smart chase with collision avoidance
+						if best_moves:
+							return random.choice(best_moves)
+
+		# Fallback: smart chase with ghost avoidance
 		path = self.find_path_to_target(maze, pacman_x, pacman_y)
 		if path and len(path) > 0:
 			return path[0]
 
-		# Final fallback: avoid reversing direction
+		# Final fallback: avoid reversing and avoid other ghosts
 		opposite_dir = (-self.direction[0], -self.direction[1])
-		forward_moves = [move for move in valid_moves if move != opposite_dir]
+		good_moves = []
 
-		if forward_moves:
-			return random.choice(forward_moves)
+		for dx, dy in valid_moves:
+			if (dx, dy) != opposite_dir:  # Don't reverse
+				new_x, new_y = self.x + dx, self.y + dy
+				avoid_ghosts = True
+				for ghost_x, ghost_y in other_ghost_positions:
+					if abs(new_x - ghost_x) + abs(new_y - ghost_y) < 2:
+						avoid_ghosts = False
+						break
+				if avoid_ghosts:
+					good_moves.append((dx, dy))
+
+		if good_moves:
+			return random.choice(good_moves)
 
 		return random.choice(valid_moves)
 
-	def move(self, maze, pacman_x, pacman_y, pacman_direction, level_speed_multiplier=1.0):
+	def move(self, maze, pacman_x, pacman_y, pacman_direction, level_speed_multiplier=1.0, all_ghosts=None):
 		# Update vulnerable state and timers
 		self.update_vulnerable_state()
 		self.path_cache_timer += 1
@@ -513,8 +621,10 @@ class Ghost:
 
 		self.move_timer = 0
 
-		# Choose move based on ultra-smart AI
-		dx, dy = self.choose_smart_move(maze, pacman_x, pacman_y, pacman_direction)
+		# Choose move based on ultra-smart AI with spreading
+		if all_ghosts is None:
+			all_ghosts = []
+		dx, dy = self.choose_smart_move(maze, pacman_x, pacman_y, pacman_direction, all_ghosts)
 
 		# Apply movement with tunnel support
 		new_x = self.x + dx
@@ -535,16 +645,18 @@ class Ghost:
 			self.direction = (dx, dy)
 
 	def draw(self, screen):
-		if self.eaten:
-			return  # Don't draw if eaten
+		# FIXED: Always draw ghost unless specifically being respawned
+		if self.eaten and self.returning_home and abs(self.x - self.start_x) <= 1 and abs(self.y - self.start_y) <= 1:
+			return  # Only don't draw when actually respawning at home
 
 		center_x = self.x * CELL_SIZE + CELL_SIZE // 2
 		center_y = self.y * CELL_SIZE + CELL_SIZE // 2
 		radius = CELL_SIZE // 3
 
 		# Draw ghost body (circle + rectangle)
-		pygame.draw.circle(screen, self.color, (center_x, center_y - 2), radius)
-		pygame.draw.rect(screen, self.color,
+		ghost_color = self.color if not (self.eaten and self.returning_home) else GRAY
+		pygame.draw.circle(screen, ghost_color, (center_x, center_y - 2), radius)
+		pygame.draw.rect(screen, ghost_color,
 						(center_x - radius, center_y - 2, radius * 2, radius + 2))
 
 		# Draw wavy bottom
@@ -555,16 +667,21 @@ class Ghost:
 			wave_points.append((x, y))
 		wave_points.append((center_x + radius, center_y + radius))
 		wave_points.append((center_x - radius, center_y + radius))
-		pygame.draw.polygon(screen, self.color, wave_points)
+		pygame.draw.polygon(screen, ghost_color, wave_points)
 
-		# Draw eyes
+		# Draw eyes - different for eaten ghosts
 		eye_size = 3
-		eye_color = WHITE if not self.vulnerable or self.vulnerable_timer >= 60 else BLACK
-		pygame.draw.circle(screen, eye_color, (center_x - 6, center_y - 8), eye_size)
-		pygame.draw.circle(screen, eye_color, (center_x + 6, center_y - 8), eye_size)
-		if not self.vulnerable or self.vulnerable_timer >= 60:
-			pygame.draw.circle(screen, BLACK, (center_x - 6, center_y - 8), 2)
-			pygame.draw.circle(screen, BLACK, (center_x + 6, center_y - 8), 2)
+		if self.eaten and self.returning_home:
+			# Draw dot eyes for eaten ghosts
+			pygame.draw.circle(screen, WHITE, (center_x - 6, center_y - 8), 2)
+			pygame.draw.circle(screen, WHITE, (center_x + 6, center_y - 8), 2)
+		else:
+			eye_color = WHITE if not self.vulnerable or self.vulnerable_timer >= 60 else BLACK
+			pygame.draw.circle(screen, eye_color, (center_x - 6, center_y - 8), eye_size)
+			pygame.draw.circle(screen, eye_color, (center_x + 6, center_y - 8), eye_size)
+			if not self.vulnerable or self.vulnerable_timer >= 60:
+				pygame.draw.circle(screen, BLACK, (center_x - 6, center_y - 8), 2)
+				pygame.draw.circle(screen, BLACK, (center_x + 6, center_y - 8), 2)
 
 class Fruit:
 	def __init__(self, x, y):
@@ -795,9 +912,14 @@ class WinDialog:
 		return None
 
 class Game:
-	def __init__(self):
-		self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-		pygame.display.set_caption("Pac-Man Game - Full Window & Speed Progression")
+	def __init__(self, screen=None):
+		if screen is None:
+			self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+			pygame.display.set_caption("Pac-Man Game - Spread Out Ghosts & No Disappearing")
+			self.own_screen = True
+		else:
+			self.screen = screen
+			self.own_screen = False
 		self.clock = pygame.time.Clock()
 		self.pacman = PacMan(1)  # Initialize with level 1
 		self.maze = [row[:] for row in MAZE]  # Copy the maze
@@ -813,12 +935,12 @@ class Game:
 		self.life_notification = None
 		self.life_lost_timer = 0
 
-		# Create ultra-smart ghosts with different personalities
+		# Create ultra-smart ghosts with different personalities and IDs
 		self.ghosts = [
-			Ghost(9, 9, RED, "aggressive"),      # Red ghost - aggressive chaser
-			Ghost(10, 9, PINK, "ambush"),        # Pink ghost - ambush tactics
-			Ghost(9, 10, CYAN, "patrol"),        # Cyan ghost - patrol behavior
-			Ghost(10, 10, ORANGE, "unpredictable")  # Orange ghost - unpredictable
+			Ghost(9, 9, RED, "aggressive", 0),      # Red ghost - aggressive chaser
+			Ghost(10, 9, PINK, "ambush", 1),        # Pink ghost - ambush tactics
+			Ghost(9, 10, CYAN, "patrol", 2),        # Cyan ghost - patrol behavior
+			Ghost(10, 10, ORANGE, "unpredictable", 3)  # Orange ghost - unpredictable
 		]
 
 		# Fruit system
@@ -997,9 +1119,13 @@ class Game:
 		# Update fruit spawn interval for higher levels
 		self.fruit_spawn_interval = max(150, 300 - (self.level * 20))
 
-		# Reset ghosts
-		for ghost in self.ghosts:
-			ghost.reset_after_eaten()
+		# Reset ghosts with proper IDs
+		self.ghosts = [
+			Ghost(9, 9, RED, "aggressive", 0),
+			Ghost(10, 9, PINK, "ambush", 1),
+			Ghost(9, 10, CYAN, "patrol", 2),
+			Ghost(10, 10, ORANGE, "unpredictable", 3)
+		]
 
 	def draw_lives(self, ui_y):
 		"""Draw life indicators in the UI"""
@@ -1061,7 +1187,7 @@ class Game:
 			self.screen.blit(game_over_text, (20, ui_y + 80))
 		elif not self.show_win_dialog and not self.life_lost_timer:
 			# Instructions
-			instruction_text = self.font.render("WASD/Arrows: Move | Get faster each level! Collect dots & avoid ghosts!", True, WHITE)
+			instruction_text = self.font.render("WASD/Arrows: Move | Ghosts spread out and hunt strategically!", True, WHITE)
 			self.screen.blit(instruction_text, (20, ui_y + 80))
 
 	def restart_game(self):
@@ -1084,9 +1210,13 @@ class Game:
 		self.life_notification = None
 		self.life_lost_timer = 0
 
-		# Reset ghosts
-		for ghost in self.ghosts:
-			ghost.reset_after_eaten()
+		# Reset ghosts with proper IDs
+		self.ghosts = [
+			Ghost(9, 9, RED, "aggressive", 0),
+			Ghost(10, 9, PINK, "ambush", 1),
+			Ghost(9, 10, CYAN, "patrol", 2),
+			Ghost(10, 10, ORANGE, "unpredictable", 3)
+		]
 
 	def handle_input(self):
 		if self.game_over or self.show_win_dialog or self.life_lost_timer > 0:
@@ -1126,10 +1256,17 @@ class Game:
 			# Handle events
 			for event in pygame.event.get():
 				if event.type == pygame.QUIT:
-					running = False
+					if self.own_screen:
+						pygame.quit()
+						sys.exit()
+					else:
+						return "quit"
 				elif event.type == pygame.KEYDOWN:
 					if event.key == pygame.K_ESCAPE:
-						running = False
+						if self.own_screen:
+							running = False
+						else:
+							return "menu"
 					elif event.key == pygame.K_r and self.game_over:
 						self.restart_game()
 				elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -1138,7 +1275,10 @@ class Game:
 						if result == "continue":
 							self.next_level()
 						elif result == "quit":
-							running = False
+							if self.own_screen:
+								running = False
+							else:
+								return "menu"
 
 			# Update life lost timer
 			if self.life_lost_timer > 0:
@@ -1154,10 +1294,10 @@ class Game:
 				# Update fruit spawning
 				self.update_fruit_spawning()
 
-				# Move ghosts with ultra-smart AI and level-based speed
+				# Move ghosts with ultra-smart AI and level-based speed - PASS ALL GHOSTS
 				speed_multiplier, _ = self.get_level_difficulty()
 				for ghost in self.ghosts:
-					ghost.move(self.maze, self.pacman.x, self.pacman.y, self.pacman.direction, speed_multiplier)
+					ghost.move(self.maze, self.pacman.x, self.pacman.y, self.pacman.direction, speed_multiplier, self.ghosts)
 
 				# Check for collisions
 				self.check_ghost_collision()
@@ -1192,8 +1332,11 @@ class Game:
 			pygame.display.flip()
 			self.clock.tick(15)  # 15 FPS for good responsiveness
 
-		pygame.quit()
-		sys.exit()
+		if self.own_screen:
+			pygame.quit()
+			sys.exit()
+		else:
+			return "menu"
 
 if __name__ == "__main__":
 	game = Game()
