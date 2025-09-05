@@ -342,7 +342,8 @@ class GalagaGame:
 
 		# Draw stars
 		for star in self.stars:
-			alpha = int(star['brightness'] * (0.3 + 0.7 * math.sin(self.animation_frame * 0.02 + star['x'] * 0.01)))
+			alpha = int(star['brightness'] * (0.3 + 0.7 * abs(math.sin(self.animation_frame * 0.02 + star['x'] * 0.01))))
+			alpha = max(0, min(255, alpha))  # Clamp between 0 and 255
 			color = (alpha, alpha, alpha)
 			pygame.draw.circle(self.screen, color, (int(star['x']), int(star['y'])), 1)
 
