@@ -46,22 +46,27 @@ class DonkeyKongGame:
 			{'y': WINDOW_HEIGHT - 320, 'x_start': 100, 'x_end': WINDOW_WIDTH, 'slope': 2},        # Second (sloped)
 			{'y': WINDOW_HEIGHT - 440, 'x_start': 0, 'x_end': WINDOW_WIDTH - 100, 'slope': -2},   # Third (reverse slope)
 			{'y': WINDOW_HEIGHT - 560, 'x_start': 100, 'x_end': WINDOW_WIDTH, 'slope': 2},        # Fourth (sloped)
-			{'y': WINDOW_HEIGHT - 680, 'x_start': 0, 'x_end': WINDOW_WIDTH - 100, 'slope': 0},    # Fifth
-			{'y': WINDOW_HEIGHT - 800, 'x_start': 200, 'x_end': WINDOW_WIDTH - 200, 'slope': 0},  # Top platform
+			{'y': WINDOW_HEIGHT - 680, 'x_start': 0, 'x_end': WINDOW_WIDTH - 100, 'slope': 0},    # Fifth (DK platform)
+			{'y': WINDOW_HEIGHT - 800, 'x_start': 200, 'x_end': WINDOW_WIDTH - 200, 'slope': 0},  # Top platform (Princess)
 		]
 
-		# Ladders (x position, bottom_y, top_y) - fixed positioning
+		# Ladders positioned at platform edges for natural flow
 		self.ladders = [
-			{'x': 150, 'bottom': WINDOW_HEIGHT - 200, 'top': WINDOW_HEIGHT - 320, 'width': 25},
-			{'x': WINDOW_WIDTH - 150, 'bottom': WINDOW_HEIGHT - 320, 'top': WINDOW_HEIGHT - 440, 'width': 25},
-			{'x': 150, 'bottom': WINDOW_HEIGHT - 440, 'top': WINDOW_HEIGHT - 560, 'width': 25},
-			{'x': WINDOW_WIDTH - 150, 'bottom': WINDOW_HEIGHT - 560, 'top': WINDOW_HEIGHT - 680, 'width': 25},
+			# Bottom to 2nd platform (left side)
+			{'x': 120, 'bottom': WINDOW_HEIGHT - 200, 'top': WINDOW_HEIGHT - 320, 'width': 25},
+			# 2nd to 3rd platform (right side - where 2nd platform slopes down)
+			{'x': WINDOW_WIDTH - 120, 'bottom': WINDOW_HEIGHT - 320, 'top': WINDOW_HEIGHT - 440, 'width': 25},
+			# 3rd to 4th platform (left side - where 3rd platform slopes down)
+			{'x': 120, 'bottom': WINDOW_HEIGHT - 440, 'top': WINDOW_HEIGHT - 560, 'width': 25},
+			# 4th to 5th platform (right side - where 4th platform slopes down)
+			{'x': WINDOW_WIDTH - 120, 'bottom': WINDOW_HEIGHT - 560, 'top': WINDOW_HEIGHT - 680, 'width': 25},
+			# 5th to top platform (center - for Mario to reach princess)
 			{'x': 400, 'bottom': WINDOW_HEIGHT - 680, 'top': WINDOW_HEIGHT - 800, 'width': 25},
 		]
 
-		# Donkey Kong - positioned at top
-		self.dk_x = WINDOW_WIDTH - 150
-		self.dk_y = WINDOW_HEIGHT - 850
+		# Donkey Kong - positioned on left side of fifth platform
+		self.dk_x = 80
+		self.dk_y = WINDOW_HEIGHT - 730
 		self.dk_throw_timer = 0
 		self.dk_animation_frame = 0
 
@@ -69,8 +74,8 @@ class DonkeyKongGame:
 		self.barrels = []
 		self.barrel_spawn_timer = 0
 
-		# Princess (Pauline) - positioned at top left
-		self.princess_x = 250
+		# Princess (Pauline) - positioned alone on top platform
+		self.princess_x = WINDOW_WIDTH // 2
 		self.princess_y = WINDOW_HEIGHT - 850
 
 		# Game state
@@ -82,12 +87,13 @@ class DonkeyKongGame:
 
 	def spawn_barrel(self):
 		barrel = {
-			'x': self.dk_x,
+			'x': self.dk_x + 40,  # Start to the right of DK
 			'y': self.dk_y + 50,
-			'dx': -2 - random.uniform(0, 1),
+			'dx': 2.5,  # Go right initially (positive speed)
 			'dy': 0,
-			'platform_level': len(self.platforms) - 1,  # Start at top platform
-			'bouncing': False
+			'platform_level': 4,  # Start on DK's platform (5th platform, index 4)
+			'bouncing': False,
+			'last_direction': 1  # Track direction: 1 = right, -1 = left
 		}
 		self.barrels.append(barrel)
 
@@ -97,36 +103,94 @@ class DonkeyKongGame:
 			barrel['x'] += barrel['dx']
 			barrel['y'] += barrel['dy']
 
-			# Gravity
+			# Gravity when falling
 			if barrel['bouncing']:
-				barrel['dy'] += 0.3
+				barrel['dy'] += 0.4
 
-			# Check platform collisions
+			# Check platform collisions - only if barrel is actually above platform bounds
 			on_platform = False
 			for i, platform in enumerate(self.platforms):
-				if (barrel['y'] >= platform['y'] - 15 and barrel['y'] <= platform['y'] + 5 and
-					barrel['x'] >= platform['x_start'] - 20 and barrel['x'] <= platform['x_end'] + 20):
+				platform_y = platform['y']
+				# Handle sloped platforms
+				if platform['slope'] != 0:
+					slope_offset = (barrel['x'] - platform['x_start']) * platform['slope'] / 100
+					platform_y += slope_offset
 
-					barrel['y'] = platform['y'] - 15
+				# Only catch barrel if it's within platform bounds (not falling off edges)
+				if (barrel['y'] >= platform_y - 15 and barrel['y'] <= platform_y + 10 and
+					barrel['x'] >= platform['x_start'] and barrel['x'] <= platform['x_end']):
+
+					barrel['y'] = platform_y - 15
 					barrel['dy'] = 0
 					barrel['bouncing'] = False
 					barrel['platform_level'] = i
 					on_platform = True
+
+					# Give barrel proper rolling speed when it lands on a new platform
+					if abs(barrel['dx']) < 1.5:  # If barrel has slow falling speed (just landed)
+						# REVERSE direction from previous platform (creates zigzag pattern)
+						new_direction = -barrel.get('last_direction', 1)  # Reverse last direction
+						speed = 2.5
+						barrel['dx'] = new_direction * speed
+						barrel['last_direction'] = new_direction
+
 					break
 
+			# Handle barrel rolling on platforms
+			if on_platform and not barrel['bouncing']:
+				current_platform = self.platforms[barrel['platform_level']]
+
+				# Ensure proper rolling speed and track direction
+				if current_platform['slope'] > 0:  # Downward slope (left to right)
+					if barrel['dx'] > 0:
+						barrel['dx'] = 2.5  # Fast downhill
+					else:
+						barrel['dx'] = -1.5  # Slow uphill
+				elif current_platform['slope'] < 0:  # Upward slope (left to right)
+					if barrel['dx'] > 0:
+						barrel['dx'] = 1.5   # Slow uphill
+					else:
+						barrel['dx'] = -2.5  # Fast downhill
+				else:  # Flat platform
+					if abs(barrel['dx']) < 1.5:  # If speed too slow, boost it
+						barrel['dx'] = 2.0 if barrel['dx'] >= 0 else -2.0
+
+				# Track current direction for next platform
+				barrel['last_direction'] = 1 if barrel['dx'] > 0 else -1
+
+				# Check if barrel reaches platform edges and should fall down
+				if barrel['platform_level'] > 0:  # Not on bottom platform
+
+					# Left edge of platform
+					if barrel['x'] <= current_platform['x_start'] + 10:
+						# Store direction before falling
+						barrel['last_direction'] = -1  # Was going left
+						barrel['bouncing'] = True
+						barrel['dy'] = 3
+						barrel['dx'] = -0.5  # Small horizontal push off edge
+						barrel['x'] = current_platform['x_start'] - 10  # Move clearly off platform
+
+					# Right edge of platform
+					elif barrel['x'] >= current_platform['x_end'] - 10:
+						# Store direction before falling
+						barrel['last_direction'] = 1   # Was going right
+						barrel['bouncing'] = True
+						barrel['dy'] = 3
+						barrel['dx'] = 0.5   # Small horizontal push off edge
+						barrel['x'] = current_platform['x_end'] + 10  # Move clearly off platform
+
+				else:
+					# On bottom platform - just roll off screen
+					if barrel['x'] < -20:
+						self.barrels.remove(barrel)
+						continue
+
+			# Start falling if not on any platform
 			if not on_platform and not barrel['bouncing']:
 				barrel['bouncing'] = True
 				barrel['dy'] = 1
 
-			# Check for ladder transitions (barrels occasionally fall down ladders)
-			if random.random() < 0.02:  # 2% chance per frame
-				for ladder in self.ladders:
-					if abs(barrel['x'] - ladder['x']) < 30:
-						if barrel['platform_level'] > 0:  # Not on bottom platform
-							barrel['bouncing'] = True
-							barrel['dy'] = 2
-
-			# Remove barrels that go off screen
+			# Remove barrels that go off screen or hit bottom
 			if barrel['x'] < -50 or barrel['x'] > WINDOW_WIDTH + 50 or barrel['y'] > WINDOW_HEIGHT:
 				self.barrels.remove(barrel)
 
@@ -157,15 +221,15 @@ class DonkeyKongGame:
 
 	def check_mario_ladder_collision(self):
 		mario_center_x = self.mario_x + self.mario_width // 2
-		mario_bottom = self.mario_y + self.mario_height
-		mario_top = self.mario_y
+		mario_center_y = self.mario_y + self.mario_height // 2
 
 		self.mario_on_ladder = False
 		for ladder in self.ladders:
-			# Check if Mario is horizontally aligned with ladder
-			if abs(mario_center_x - ladder['x']) < ladder['width']:
-				# Check if Mario is vertically within ladder bounds
-				if mario_bottom >= ladder['top'] - 15 and mario_top <= ladder['bottom'] + 15:
+			# Check if Mario's center is near the ladder horizontally (generous)
+			horizontal_distance = abs(mario_center_x - ladder['x'])
+			if horizontal_distance <= 20:  # More generous
+				# Check if Mario overlaps with ladder vertically (generous bounds)
+				if mario_center_y >= ladder['top'] - 20 and mario_center_y <= ladder['bottom'] + 20:
 					self.mario_on_ladder = True
 					break
 
@@ -180,10 +244,14 @@ class DonkeyKongGame:
 				if self.lives <= 0:
 					self.game_over = True
 				else:
-					# Reset Mario position
+					# Reset Mario position and all states
 					self.mario_x = 50
 					self.mario_y = WINDOW_HEIGHT - 220
 					self.mario_dy = 0
+					self.mario_on_ground = False
+					self.mario_on_ladder = False
+					self.mario_climbing = False
+					self.mario_facing_right = True
 					self.barrels.clear()  # Clear barrels on hit
 				return
 
@@ -462,64 +530,77 @@ class DonkeyKongGame:
 				elif event.type == pygame.KEYDOWN:
 					if event.key == pygame.K_ESCAPE:
 						return "menu"
-					elif event.key == pygame.K_SPACE and (self.mario_on_ground or self.mario_on_ladder):
-						self.mario_dy = -10  # Jump
+					elif event.key == pygame.K_SPACE and self.mario_on_ground and not self.mario_on_ladder:
+						self.mario_dy = -7  # Slightly higher jump
 					elif event.key == pygame.K_r and (self.game_over or self.game_won):
-						# Restart game
+						# Restart game - Reset ALL Mario states
 						self.mario_x = 50
 						self.mario_y = WINDOW_HEIGHT - 220
 						self.mario_dy = 0
 						self.mario_on_ground = False
+						self.mario_on_ladder = False
+						self.mario_climbing = False
+						self.mario_facing_right = True
+						self.mario_animation_frame = 0
 						self.score = 0
 						self.lives = 3
 						self.level = 1
 						self.barrels.clear()
+						self.barrel_spawn_timer = 0
+						self.dk_throw_timer = 0
+						self.animation_timer = 0
 						self.game_won = False
 						self.game_over = False
 
 			if not self.game_over and not self.game_won:
 				keys = pygame.key.get_pressed()
 
-				# Mario movement
-				if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-					self.mario_x -= 2
-					self.mario_facing_right = False
-					if self.mario_x < 0:
-						self.mario_x = 0
+				# Check ladder collision first
+				self.check_mario_ladder_collision()
 
-				if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-					self.mario_x += 2
-					self.mario_facing_right = True
-					if self.mario_x > WINDOW_WIDTH - self.mario_width:
-						self.mario_x = WINDOW_WIDTH - self.mario_width
-
-				# Ladder climbing - FIXED
+				# Initialize climbing state
 				self.mario_climbing = False
+
+				# STEP 1: Handle climbing (highest priority)
 				if self.mario_on_ladder:
 					if keys[pygame.K_UP] or keys[pygame.K_w]:
-						self.mario_y -= 2
-						self.mario_dy = 0
+						self.mario_y -= 2.5  # Slightly slower climbing to match movement
+						self.mario_dy = 0  # Cancel gravity
 						self.mario_climbing = True
 					elif keys[pygame.K_DOWN] or keys[pygame.K_s]:
-						self.mario_y += 2
-						self.mario_dy = 0
+						self.mario_y += 2.5  # Slightly slower climbing to match movement
+						self.mario_dy = 0  # Cancel gravity
 						self.mario_climbing = True
 
-				# Gravity (only when not on ladder or ground)
-				if not self.mario_on_ground and not self.mario_climbing:
-					self.mario_dy += 0.4
-
-				# Apply vertical movement
+				# STEP 2: Handle horizontal movement (always allowed unless climbing vertically)
 				if not self.mario_climbing:
+					if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+						self.mario_x -= 1.5  # Slower movement
+						self.mario_facing_right = False
+						if self.mario_x < 0:
+							self.mario_x = 0
+
+					if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+						self.mario_x += 1.5  # Slower movement
+						self.mario_facing_right = True
+						if self.mario_x > WINDOW_WIDTH - self.mario_width:
+							self.mario_x = WINDOW_WIDTH - self.mario_width
+
+				# STEP 3: Handle physics (only if not climbing)
+				if not self.mario_climbing:
+					# Apply gravity
+					if not self.mario_on_ground:
+						self.mario_dy += 0.5
+
+					# Apply vertical velocity
 					self.mario_y += self.mario_dy
 
-				# Update game objects
-				self.check_mario_platform_collision()
-				self.check_mario_ladder_collision()
+					# Check platform collisions (after movement)
+					self.check_mario_platform_collision()
 
 				# Spawn barrels
 				self.barrel_spawn_timer += 1
-				if self.barrel_spawn_timer > 80:  # Spawn every ~1.3 seconds at 60fps
+				if self.barrel_spawn_timer > 150:  # Spawn every ~2.5 seconds at 60fps (less frequent)
 					self.spawn_barrel()
 					self.barrel_spawn_timer = 0
 
