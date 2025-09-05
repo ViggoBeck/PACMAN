@@ -10,7 +10,7 @@ pygame.init()
 
 # Constants
 WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 700  # Increased for better UI visibility
+WINDOW_HEIGHT = 700
 CELL_SIZE = 30
 BLACK = (0, 0, 0)
 BLUE = (0, 0, 255)
@@ -42,7 +42,7 @@ MAZE = [
 	[1,1,1,1,2,1,1,1,0,1,1,0,1,1,1,2,1,1,1,1],
 	[0,0,0,1,2,1,0,0,0,0,0,0,0,0,1,2,1,0,0,0],
 	[1,1,1,1,2,1,0,1,1,0,0,1,1,0,1,2,1,1,1,1],
-	[0,0,0,0,2,0,0,1,0,0,0,0,1,0,0,2,0,0,0,0],
+	[0,0,0,0,2,0,0,1,0,0,0,0,1,0,0,2,0,0,0,0],  # This is the tunnel row
 	[1,1,1,1,2,1,0,1,0,0,0,0,1,0,1,2,1,1,1,1],
 	[0,0,0,1,2,1,0,1,1,1,1,1,1,0,1,2,1,0,0,0],
 	[1,1,1,1,2,1,1,1,0,1,1,0,1,1,1,2,1,1,1,1],
@@ -55,6 +55,17 @@ MAZE = [
 	[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
 	[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 ]
+
+# Ghost base coordinates (exclude from fruit spawning)
+GHOST_BASE_COORDS = {
+	(8, 8), (9, 8), (10, 8), (11, 8),
+	(8, 9), (9, 9), (10, 9), (11, 9),
+	(8, 10), (9, 10), (10, 10), (11, 10),
+	(8, 11), (9, 11), (10, 11), (11, 11)
+}
+
+# Tunnel row (where horizontal wraparound is possible)
+TUNNEL_ROW = 9
 
 # Fruit types with different point values
 FRUITS = [
@@ -78,6 +89,13 @@ class PacMan:
 	def move(self, dx, dy, maze):
 		new_x = self.x + dx
 		new_y = self.y + dy
+
+		# Handle tunnel wraparound
+		if new_y == TUNNEL_ROW:
+			if new_x < 0:  # Going through left edge
+				new_x = len(maze[0]) - 1
+			elif new_x >= len(maze[0]):  # Going through right edge
+				new_x = 0
 
 		# Check boundaries and walls
 		if (0 <= new_x < len(maze[0]) and
@@ -149,8 +167,9 @@ class Ghost:
 		self.vulnerable_timer = 0
 		self.eaten = False
 		self.returning_home = False
+		self.base_speed = 6
 
-	def set_vulnerable(self, duration=200):  # About 13 seconds at 15 FPS
+	def set_vulnerable(self, duration):
 		self.vulnerable = True
 		self.vulnerable_timer = duration
 		self.color = DARK_BLUE
@@ -195,6 +214,13 @@ class Ghost:
 			for dx, dy in [UP, DOWN, LEFT, RIGHT]:
 				new_x, new_y = x + dx, y + dy
 
+				# Handle tunnel wraparound for ghosts too
+				if new_y == TUNNEL_ROW:
+					if new_x < 0:
+						new_x = len(maze[0]) - 1
+					elif new_x >= len(maze[0]):
+						new_x = 0
+
 				if ((new_x, new_y) not in visited and
 					0 <= new_x < len(maze[0]) and
 					0 <= new_y < len(maze) and
@@ -211,6 +237,14 @@ class Ghost:
 		for dx, dy in [UP, DOWN, LEFT, RIGHT]:
 			new_x = self.x + dx
 			new_y = self.y + dy
+
+			# Handle tunnel wraparound
+			if new_y == TUNNEL_ROW:
+				if new_x < 0:
+					new_x = len(maze[0]) - 1
+				elif new_x >= len(maze[0]):
+					new_x = 0
+
 			if (0 <= new_x < len(maze[0]) and
 				0 <= new_y < len(maze) and
 				maze[new_y][new_x] != 1):  # Not a wall
@@ -238,6 +272,12 @@ class Ghost:
 			max_distance = 0
 			for dx, dy in valid_moves:
 				new_x, new_y = self.x + dx, self.y + dy
+				# Handle tunnel distance calculation
+				if new_y == TUNNEL_ROW:
+					if new_x < 0:
+						new_x = len(maze[0]) - 1
+					elif new_x >= len(maze[0]):
+						new_x = 0
 				distance = abs(new_x - pacman_x) + abs(new_y - pacman_y)
 				if distance > max_distance:
 					max_distance = distance
@@ -257,15 +297,13 @@ class Ghost:
 			self.stuck_counter = 0
 			return random.choice(valid_moves)
 
-		# Normal AI behavior
+		# Normal AI behavior (same as before)
 		if self.personality == "aggressive":
-			# Red ghost - direct pursuit using pathfinding
 			path = self.find_path_to_target(maze, pacman_x, pacman_y)
 			if path and len(path) > 0:
 				return path[0]
 
 		elif self.personality == "ambush":
-			# Pink ghost - tries to ambush 4 spaces ahead of Pac-Man
 			projected_x = pacman_x + 4 * (1 if random.random() > 0.5 else -1)
 			projected_y = pacman_y + 4 * (1 if random.random() > 0.5 else -1)
 			path = self.find_path_to_target(maze, projected_x, projected_y)
@@ -273,7 +311,6 @@ class Ghost:
 				return path[0]
 
 		elif self.personality == "patrol":
-			# Cyan ghost - patrols corners but still chases
 			distance_to_pacman = abs(self.x - pacman_x) + abs(self.y - pacman_y)
 			if distance_to_pacman > 8:
 				path = self.find_path_to_target(maze, pacman_x, pacman_y)
@@ -286,7 +323,6 @@ class Ghost:
 					return path[0]
 
 		elif self.personality == "unpredictable":
-			# Orange ghost - unpredictable behavior
 			distance_to_pacman = abs(self.x - pacman_x) + abs(self.y - pacman_y)
 			if distance_to_pacman > 8:
 				path = self.find_path_to_target(maze, pacman_x, pacman_y)
@@ -298,6 +334,11 @@ class Ghost:
 					max_distance = 0
 					for dx, dy in valid_moves:
 						new_x, new_y = self.x + dx, self.y + dy
+						if new_y == TUNNEL_ROW:
+							if new_x < 0:
+								new_x = len(maze[0]) - 1
+							elif new_x >= len(maze[0]):
+								new_x = 0
 						distance = abs(new_x - pacman_x) + abs(new_y - pacman_y)
 						if distance > max_distance:
 							max_distance = distance
@@ -318,12 +359,15 @@ class Ghost:
 
 		return random.choice(valid_moves)
 
-	def move(self, maze, pacman_x, pacman_y):
+	def move(self, maze, pacman_x, pacman_y, level_speed_multiplier=1.0):
 		# Update vulnerable state
 		self.update_vulnerable_state()
 
 		self.move_timer += 1
-		move_speed = 8 if self.vulnerable else 6  # Slower when vulnerable
+		# Increase speed based on level
+		adjusted_speed = max(2, int(self.base_speed / level_speed_multiplier))
+		move_speed = adjusted_speed + 2 if self.vulnerable else adjusted_speed
+
 		if self.move_timer < move_speed:
 			return
 
@@ -332,9 +376,17 @@ class Ghost:
 		# Choose move based on smart AI
 		dx, dy = self.choose_smart_move(maze, pacman_x, pacman_y)
 
-		# Apply movement
+		# Apply movement with tunnel support
 		new_x = self.x + dx
 		new_y = self.y + dy
+
+		# Handle tunnel wraparound
+		if new_y == TUNNEL_ROW:
+			if new_x < 0:
+				new_x = len(maze[0]) - 1
+			elif new_x >= len(maze[0]):
+				new_x = 0
+
 		if (0 <= new_x < len(maze[0]) and
 			0 <= new_y < len(maze) and
 			maze[new_y][new_x] != 1):
@@ -403,28 +455,29 @@ class Fruit:
 		screen.blit(text, text_rect)
 
 class WinDialog:
-	def __init__(self, screen, score):
+	def __init__(self, screen, score, level):
 		self.screen = screen
 		self.score = score
+		self.level = level
 		self.font_large = pygame.font.Font(None, 48)
 		self.font_medium = pygame.font.Font(None, 36)
 		self.font_small = pygame.font.Font(None, 24)
 
 		# Dialog dimensions
-		self.width = 400
-		self.height = 250
+		self.width = 450
+		self.height = 280
 		self.x = (WINDOW_WIDTH - self.width) // 2
 		self.y = (WINDOW_HEIGHT - self.height) // 2
 
 		# Button dimensions
-		self.button_width = 120
+		self.button_width = 140
 		self.button_height = 40
-		self.yes_button_rect = pygame.Rect(
+		self.continue_button_rect = pygame.Rect(
 			self.x + 50, self.y + self.height - 80,
 			self.button_width, self.button_height
 		)
-		self.no_button_rect = pygame.Rect(
-			self.x + self.width - 170, self.y + self.height - 80,
+		self.quit_button_rect = pygame.Rect(
+			self.x + self.width - 190, self.y + self.height - 80,
 			self.button_width, self.button_height
 		)
 
@@ -440,49 +493,54 @@ class WinDialog:
 		pygame.draw.rect(self.screen, BLACK, (self.x, self.y, self.width, self.height), 3)
 
 		# Draw title
-		title_text = self.font_large.render("🎉 CONGRATULATIONS! 🎉", True, GREEN)
-		title_rect = title_text.get_rect(center=(self.x + self.width//2, self.y + 40))
+		title_text = self.font_large.render("🎉 LEVEL COMPLETE! 🎉", True, GREEN)
+		title_rect = title_text.get_rect(center=(self.x + self.width//2, self.y + 35))
 		self.screen.blit(title_text, title_rect)
 
+		# Draw level info
+		level_text = self.font_medium.render(f"Level {self.level} Cleared!", True, BLACK)
+		level_rect = level_text.get_rect(center=(self.x + self.width//2, self.y + 75))
+		self.screen.blit(level_text, level_rect)
+
 		# Draw score
-		score_text = self.font_medium.render(f"Final Score: {self.score}", True, BLACK)
-		score_rect = score_text.get_rect(center=(self.x + self.width//2, self.y + 80))
+		score_text = self.font_medium.render(f"Score: {self.score}", True, BLACK)
+		score_rect = score_text.get_rect(center=(self.x + self.width//2, self.y + 110))
 		self.screen.blit(score_text, score_rect)
 
 		# Draw message
-		msg_text = self.font_medium.render("You collected all the dots!", True, BLACK)
-		msg_rect = msg_text.get_rect(center=(self.x + self.width//2, self.y + 110))
+		msg_text = self.font_medium.render("All dots collected!", True, BLACK)
+		msg_rect = msg_text.get_rect(center=(self.x + self.width//2, self.y + 140))
 		self.screen.blit(msg_text, msg_rect)
 
 		# Draw question
-		question_text = self.font_medium.render("Play again?", True, BLACK)
-		question_rect = question_text.get_rect(center=(self.x + self.width//2, self.y + 150))
+		question_text = self.font_medium.render("Continue to next level?", True, BLACK)
+		question_rect = question_text.get_rect(center=(self.x + self.width//2, self.y + 175))
 		self.screen.blit(question_text, question_rect)
 
 		# Draw buttons
-		pygame.draw.rect(self.screen, GREEN, self.yes_button_rect)
-		pygame.draw.rect(self.screen, BLACK, self.yes_button_rect, 2)
-		yes_text = self.font_small.render("YES", True, BLACK)
-		yes_text_rect = yes_text.get_rect(center=self.yes_button_rect.center)
-		self.screen.blit(yes_text, yes_text_rect)
+		pygame.draw.rect(self.screen, GREEN, self.continue_button_rect)
+		pygame.draw.rect(self.screen, BLACK, self.continue_button_rect, 2)
+		continue_text = self.font_small.render("NEXT LEVEL", True, BLACK)
+		continue_text_rect = continue_text.get_rect(center=self.continue_button_rect.center)
+		self.screen.blit(continue_text, continue_text_rect)
 
-		pygame.draw.rect(self.screen, RED, self.no_button_rect)
-		pygame.draw.rect(self.screen, BLACK, self.no_button_rect, 2)
-		no_text = self.font_small.render("NO", True, WHITE)
-		no_text_rect = no_text.get_rect(center=self.no_button_rect.center)
-		self.screen.blit(no_text, no_text_rect)
+		pygame.draw.rect(self.screen, RED, self.quit_button_rect)
+		pygame.draw.rect(self.screen, BLACK, self.quit_button_rect, 2)
+		quit_text = self.font_small.render("QUIT", True, WHITE)
+		quit_text_rect = quit_text.get_rect(center=self.quit_button_rect.center)
+		self.screen.blit(quit_text, quit_text_rect)
 
 	def handle_click(self, pos):
-		if self.yes_button_rect.collidepoint(pos):
-			return "yes"
-		elif self.no_button_rect.collidepoint(pos):
-			return "no"
+		if self.continue_button_rect.collidepoint(pos):
+			return "continue"
+		elif self.quit_button_rect.collidepoint(pos):
+			return "quit"
 		return None
 
 class Game:
 	def __init__(self):
 		self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-		pygame.display.set_caption("Pac-Man Game - Power Pellets & Fruits Edition")
+		pygame.display.set_caption("Pac-Man Game - Tunnels & Levels Edition")
 		self.clock = pygame.time.Clock()
 		self.pacman = PacMan()
 		self.maze = [row[:] for row in MAZE]  # Copy the maze
@@ -505,7 +563,7 @@ class Game:
 		# Fruit system
 		self.current_fruit = None
 		self.fruit_spawn_timer = 0
-		self.fruit_spawn_interval = 300  # Spawn fruit every 20 seconds at 15 FPS
+		self.fruit_spawn_interval = max(150, 300 - (self.level * 20))  # Faster spawning at higher levels
 
 		# Ghost eating system
 		self.ghost_eat_multiplier = 1
@@ -514,6 +572,12 @@ class Game:
 		self.font = pygame.font.Font(None, 28)
 		self.font_large = pygame.font.Font(None, 36)
 		self.win_dialog = None
+
+	def get_level_difficulty(self):
+		"""Return difficulty multipliers based on level"""
+		speed_multiplier = 1.0 + (self.level - 1) * 0.3  # Ghosts get 30% faster each level
+		power_duration = max(100, 200 - (self.level - 1) * 15)  # Power pellets last shorter
+		return speed_multiplier, power_duration
 
 	def count_dots(self):
 		count = 0
@@ -532,11 +596,11 @@ class Game:
 		return count
 
 	def spawn_fruit(self):
-		# Find empty spaces to spawn fruit
+		# Find empty spaces to spawn fruit, excluding ghost base
 		empty_spaces = []
 		for y, row in enumerate(self.maze):
 			for x, cell in enumerate(row):
-				if cell == 0:  # Empty space
+				if cell == 0 and (x, y) not in GHOST_BASE_COORDS:  # Empty space, not in ghost base
 					empty_spaces.append((x, y))
 
 		if empty_spaces:
@@ -564,7 +628,7 @@ class Game:
 				else:  # Empty space
 					pygame.draw.rect(self.screen, BLACK, rect)
 
-		# Draw fruit if it exists
+		# Draw fruit if it exists and not expired
 		if self.current_fruit and not self.current_fruit.is_expired():
 			self.current_fruit.draw(self.screen)
 		elif self.current_fruit and self.current_fruit.is_expired():
@@ -582,9 +646,10 @@ class Game:
 			self.maze[self.pacman.y][self.pacman.x] = 0
 			self.score += 50
 			self.super_dots_remaining -= 1
-			# Make all ghosts vulnerable
+			# Make all ghosts vulnerable with level-adjusted duration
+			speed_multiplier, power_duration = self.get_level_difficulty()
 			for ghost in self.ghosts:
-				ghost.set_vulnerable(200)  # 200 frames = ~13 seconds
+				ghost.set_vulnerable(power_duration)
 			self.ghost_eat_multiplier = 1  # Reset multiplier
 
 		# Check for fruit collection
@@ -598,7 +663,7 @@ class Game:
 		if self.dots_remaining == 0 and self.super_dots_remaining == 0:
 			self.won = True
 			self.show_win_dialog = True
-			self.win_dialog = WinDialog(self.screen, self.score)
+			self.win_dialog = WinDialog(self.screen, self.score, self.level)
 
 	def check_ghost_collision(self):
 		for i, ghost in enumerate(self.ghosts):
@@ -622,6 +687,27 @@ class Game:
 			self.spawn_fruit()
 			self.fruit_spawn_timer = 0
 
+	def next_level(self):
+		# Keep score, increment level, reset maze
+		self.level += 1
+		self.pacman = PacMan()
+		self.maze = [row[:] for row in MAZE]
+		self.dots_remaining = self.count_dots()
+		self.super_dots_remaining = self.count_super_dots()
+		self.won = False
+		self.show_win_dialog = False
+		self.win_dialog = None
+		self.current_fruit = None
+		self.fruit_spawn_timer = 0
+		self.ghost_eat_multiplier = 1
+
+		# Update fruit spawn interval for higher levels
+		self.fruit_spawn_interval = max(150, 300 - (self.level * 20))
+
+		# Reset ghosts
+		for ghost in self.ghosts:
+			ghost.reset_after_eaten()
+
 	def draw_ui(self):
 		# UI area background
 		ui_y = len(self.maze) * CELL_SIZE
@@ -632,7 +718,7 @@ class Game:
 		self.screen.blit(score_text, (20, ui_y + 10))
 
 		# Level
-		level_text = self.font_large.render(f"LEVEL: {self.level}", True, WHITE)
+		level_text = self.font_large.render(f"LEVEL: {self.level}", True, YELLOW)
 		self.screen.blit(level_text, (250, ui_y + 10))
 
 		# Dots remaining
@@ -645,7 +731,7 @@ class Game:
 			self.screen.blit(game_over_text, (20, ui_y + 45))
 		elif not self.show_win_dialog:
 			# Instructions
-			instruction_text = self.font.render("WASD/Arrows: Move | Collect power pellets to eat ghosts! | Fruits give bonus points!", True, WHITE)
+			instruction_text = self.font.render("WASD/Arrows: Move | Use tunnels to escape! | Each level gets harder!", True, WHITE)
 			self.screen.blit(instruction_text, (20, ui_y + 45))
 
 	def restart_game(self):
@@ -661,15 +747,12 @@ class Game:
 		self.win_dialog = None
 		self.current_fruit = None
 		self.fruit_spawn_timer = 0
+		self.fruit_spawn_interval = 300
 		self.ghost_eat_multiplier = 1
 
 		# Reset ghosts
-		self.ghosts = [
-			Ghost(9, 9, RED, "aggressive"),
-			Ghost(10, 9, PINK, "ambush"),
-			Ghost(9, 10, CYAN, "patrol"),
-			Ghost(10, 10, ORANGE, "unpredictable")
-		]
+		for ghost in self.ghosts:
+			ghost.reset_after_eaten()
 
 	def handle_input(self):
 		if self.game_over or self.show_win_dialog:
@@ -718,9 +801,9 @@ class Game:
 				elif event.type == pygame.MOUSEBUTTONDOWN:
 					if self.show_win_dialog and self.win_dialog:
 						result = self.win_dialog.handle_click(event.pos)
-						if result == "yes":
-							self.restart_game()
-						elif result == "no":
+						if result == "continue":
+							self.next_level()
+						elif result == "quit":
 							running = False
 
 			if not self.game_over and not self.show_win_dialog:
@@ -733,9 +816,10 @@ class Game:
 				# Update fruit spawning
 				self.update_fruit_spawning()
 
-				# Move ghosts with smart AI
+				# Move ghosts with level-based speed
+				speed_multiplier, _ = self.get_level_difficulty()
 				for ghost in self.ghosts:
-					ghost.move(self.maze, self.pacman.x, self.pacman.y)
+					ghost.move(self.maze, self.pacman.x, self.pacman.y, speed_multiplier)
 
 				# Check for collisions
 				self.check_ghost_collision()
