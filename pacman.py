@@ -2,6 +2,7 @@ import pygame
 import sys
 import random
 import math
+import time
 from collections import deque
 
 # Initialize Pygame
@@ -9,7 +10,7 @@ pygame.init()
 
 # Constants
 WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 650
+WINDOW_HEIGHT = 700  # Increased for better UI visibility
 CELL_SIZE = 30
 BLACK = (0, 0, 0)
 BLUE = (0, 0, 255)
@@ -21,6 +22,8 @@ PINK = (255, 184, 255)
 CYAN = (0, 255, 255)
 ORANGE = (255, 184, 82)
 GRAY = (128, 128, 128)
+PURPLE = (128, 0, 128)
+DARK_BLUE = (0, 0, 139)
 
 # Directions
 UP = (0, -1)
@@ -28,11 +31,11 @@ DOWN = (0, 1)
 LEFT = (-1, 0)
 RIGHT = (1, 0)
 
-# Maze layout (1 = wall, 0 = empty, 2 = dot, 3 = pacman start)
+# Maze layout (1 = wall, 0 = empty, 2 = dot, 4 = super dot, 5 = fruit)
 MAZE = [
 	[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
 	[1,2,2,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,1],
-	[1,2,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,2,1],
+	[1,4,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,4,1],  # Super dots in corners
 	[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
 	[1,2,1,1,2,1,2,1,1,1,1,1,1,2,1,2,1,1,2,1],
 	[1,2,2,2,2,1,2,2,2,1,1,2,2,2,1,2,2,2,2,1],
@@ -47,10 +50,21 @@ MAZE = [
 	[1,2,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,2,1],
 	[1,2,2,1,2,2,2,2,2,2,2,2,2,2,2,2,1,2,2,1],
 	[1,1,2,1,2,1,2,1,1,1,1,1,1,2,1,2,1,2,1,1],
-	[1,2,2,2,2,1,2,2,2,1,1,2,2,2,1,2,2,2,2,1],
+	[1,4,2,2,2,1,2,2,2,1,1,2,2,2,1,2,2,2,4,1],  # More super dots
 	[1,2,1,1,1,1,1,1,2,1,1,2,1,1,1,1,1,1,2,1],
 	[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
 	[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+]
+
+# Fruit types with different point values
+FRUITS = [
+	("🍒", 100, RED),      # Cherry
+	("🍓", 300, RED),      # Strawberry
+	("🍊", 500, ORANGE),   # Orange
+	("🍎", 700, RED),      # Apple
+	("🍇", 1000, PURPLE),  # Grapes
+	("🔔", 2000, YELLOW),  # Bell
+	("🔑", 5000, YELLOW)   # Key
 ]
 
 class PacMan:
@@ -125,13 +139,43 @@ class Ghost:
 		self.start_x = x
 		self.start_y = y
 		self.color = color
+		self.original_color = color
 		self.direction = random.choice([UP, DOWN, LEFT, RIGHT])
 		self.move_timer = 0
 		self.personality = personality
 		self.stuck_counter = 0
 		self.last_position = (x, y)
-		self.target_x = x
-		self.target_y = y
+		self.vulnerable = False
+		self.vulnerable_timer = 0
+		self.eaten = False
+		self.returning_home = False
+
+	def set_vulnerable(self, duration=200):  # About 13 seconds at 15 FPS
+		self.vulnerable = True
+		self.vulnerable_timer = duration
+		self.color = DARK_BLUE
+
+	def update_vulnerable_state(self):
+		if self.vulnerable:
+			self.vulnerable_timer -= 1
+			# Flash when about to end
+			if self.vulnerable_timer < 60 and self.vulnerable_timer % 20 < 10:
+				self.color = WHITE
+			elif self.vulnerable_timer < 60:
+				self.color = DARK_BLUE
+
+			if self.vulnerable_timer <= 0:
+				self.vulnerable = False
+				self.color = self.original_color
+
+	def reset_after_eaten(self):
+		self.x = self.start_x
+		self.y = self.start_y
+		self.eaten = False
+		self.returning_home = False
+		self.vulnerable = False
+		self.vulnerable_timer = 0
+		self.color = self.original_color
 
 	def find_path_to_target(self, maze, target_x, target_y):
 		"""Simple BFS pathfinding to target"""
@@ -174,10 +218,32 @@ class Ghost:
 		return valid_moves
 
 	def choose_smart_move(self, maze, pacman_x, pacman_y):
-		"""Smart movement based on personality"""
+		"""Smart movement based on personality and state"""
 		valid_moves = self.get_valid_moves(maze)
 		if not valid_moves:
 			return (0, 0)
+
+		# If eaten, return to start position
+		if self.eaten or self.returning_home:
+			path = self.find_path_to_target(maze, self.start_x, self.start_y)
+			if path and len(path) > 0:
+				return path[0]
+			else:
+				self.reset_after_eaten()
+				return (0, 0)
+
+		# If vulnerable, try to run away from Pac-Man
+		if self.vulnerable:
+			best_move = None
+			max_distance = 0
+			for dx, dy in valid_moves:
+				new_x, new_y = self.x + dx, self.y + dy
+				distance = abs(new_x - pacman_x) + abs(new_y - pacman_y)
+				if distance > max_distance:
+					max_distance = distance
+					best_move = (dx, dy)
+			if best_move:
+				return best_move
 
 		# Check if stuck in the same position
 		if (self.x, self.y) == self.last_position:
@@ -191,6 +257,7 @@ class Ghost:
 			self.stuck_counter = 0
 			return random.choice(valid_moves)
 
+		# Normal AI behavior
 		if self.personality == "aggressive":
 			# Red ghost - direct pursuit using pathfinding
 			path = self.find_path_to_target(maze, pacman_x, pacman_y)
@@ -199,7 +266,6 @@ class Ghost:
 
 		elif self.personality == "ambush":
 			# Pink ghost - tries to ambush 4 spaces ahead of Pac-Man
-			# This is simplified - just tries to get closer to pacman's projected position
 			projected_x = pacman_x + 4 * (1 if random.random() > 0.5 else -1)
 			projected_y = pacman_y + 4 * (1 if random.random() > 0.5 else -1)
 			path = self.find_path_to_target(maze, projected_x, projected_y)
@@ -210,13 +276,11 @@ class Ghost:
 			# Cyan ghost - patrols corners but still chases
 			distance_to_pacman = abs(self.x - pacman_x) + abs(self.y - pacman_y)
 			if distance_to_pacman > 8:
-				# Far away, move towards pacman
 				path = self.find_path_to_target(maze, pacman_x, pacman_y)
 				if path and len(path) > 0:
 					return path[0]
 			else:
-				# Close to pacman, retreat to corner
-				corner_x, corner_y = 1, 1  # Top-left corner
+				corner_x, corner_y = 1, 1
 				path = self.find_path_to_target(maze, corner_x, corner_y)
 				if path and len(path) > 0:
 					return path[0]
@@ -225,14 +289,11 @@ class Ghost:
 			# Orange ghost - unpredictable behavior
 			distance_to_pacman = abs(self.x - pacman_x) + abs(self.y - pacman_y)
 			if distance_to_pacman > 8:
-				# Far away, chase pacman
 				path = self.find_path_to_target(maze, pacman_x, pacman_y)
 				if path and len(path) > 0:
 					return path[0]
 			else:
-				# Close to pacman, move randomly or away
 				if random.random() < 0.6:
-					# Move away from pacman
 					best_move = None
 					max_distance = 0
 					for dx, dy in valid_moves:
@@ -249,7 +310,7 @@ class Ghost:
 		if path and len(path) > 0:
 			return path[0]
 
-		# Final fallback: avoid going backwards if possible
+		# Final fallback
 		opposite_dir = (-self.direction[0], -self.direction[1])
 		forward_moves = [move for move in valid_moves if move != opposite_dir]
 		if forward_moves:
@@ -258,8 +319,12 @@ class Ghost:
 		return random.choice(valid_moves)
 
 	def move(self, maze, pacman_x, pacman_y):
+		# Update vulnerable state
+		self.update_vulnerable_state()
+
 		self.move_timer += 1
-		if self.move_timer < 6:  # Move a bit faster than before
+		move_speed = 8 if self.vulnerable else 6  # Slower when vulnerable
+		if self.move_timer < move_speed:
 			return
 
 		self.move_timer = 0
@@ -278,6 +343,9 @@ class Ghost:
 			self.direction = (dx, dy)
 
 	def draw(self, screen):
+		if self.eaten:
+			return  # Don't draw if eaten
+
 		center_x = self.x * CELL_SIZE + CELL_SIZE // 2
 		center_y = self.y * CELL_SIZE + CELL_SIZE // 2
 		radius = CELL_SIZE // 3
@@ -299,10 +367,40 @@ class Ghost:
 
 		# Draw eyes
 		eye_size = 3
-		pygame.draw.circle(screen, WHITE, (center_x - 6, center_y - 8), eye_size)
-		pygame.draw.circle(screen, WHITE, (center_x + 6, center_y - 8), eye_size)
-		pygame.draw.circle(screen, BLACK, (center_x - 6, center_y - 8), 2)
-		pygame.draw.circle(screen, BLACK, (center_x + 6, center_y - 8), 2)
+		eye_color = WHITE if not self.vulnerable or self.vulnerable_timer >= 60 else BLACK
+		pygame.draw.circle(screen, eye_color, (center_x - 6, center_y - 8), eye_size)
+		pygame.draw.circle(screen, eye_color, (center_x + 6, center_y - 8), eye_size)
+		if not self.vulnerable or self.vulnerable_timer >= 60:
+			pygame.draw.circle(screen, BLACK, (center_x - 6, center_y - 8), 2)
+			pygame.draw.circle(screen, BLACK, (center_x + 6, center_y - 8), 2)
+
+class Fruit:
+	def __init__(self, x, y):
+		self.x = x
+		self.y = y
+		self.fruit_type = random.choice(FRUITS)
+		self.spawn_time = time.time()
+		self.lifetime = 10  # Fruit disappears after 10 seconds
+
+	def is_expired(self):
+		return time.time() - self.spawn_time > self.lifetime
+
+	def get_points(self):
+		return self.fruit_type[1]
+
+	def draw(self, screen):
+		center_x = self.x * CELL_SIZE + CELL_SIZE // 2
+		center_y = self.y * CELL_SIZE + CELL_SIZE // 2
+
+		# Draw fruit background
+		pygame.draw.circle(screen, BLACK, (center_x, center_y), CELL_SIZE // 2)
+		pygame.draw.circle(screen, self.fruit_type[2], (center_x, center_y), CELL_SIZE // 3)
+
+		# Draw fruit symbol (simplified as colored circle with first letter)
+		font = pygame.font.Font(None, 20)
+		text = font.render(self.fruit_type[0][:1], True, WHITE)
+		text_rect = text.get_rect(center=(center_x, center_y))
+		screen.blit(text, text_rect)
 
 class WinDialog:
 	def __init__(self, screen, score):
@@ -384,12 +482,14 @@ class WinDialog:
 class Game:
 	def __init__(self):
 		self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-		pygame.display.set_caption("Pac-Man Game - Smart Ghosts Edition")
+		pygame.display.set_caption("Pac-Man Game - Power Pellets & Fruits Edition")
 		self.clock = pygame.time.Clock()
 		self.pacman = PacMan()
 		self.maze = [row[:] for row in MAZE]  # Copy the maze
 		self.score = 0
+		self.level = 1
 		self.dots_remaining = self.count_dots()
+		self.super_dots_remaining = self.count_super_dots()
 		self.game_over = False
 		self.won = False
 		self.show_win_dialog = False
@@ -402,17 +502,46 @@ class Game:
 			Ghost(10, 10, ORANGE, "unpredictable")  # Orange ghost - unpredictable
 		]
 
-		# Font for text
-		self.font = pygame.font.Font(None, 36)
+		# Fruit system
+		self.current_fruit = None
+		self.fruit_spawn_timer = 0
+		self.fruit_spawn_interval = 300  # Spawn fruit every 20 seconds at 15 FPS
+
+		# Ghost eating system
+		self.ghost_eat_multiplier = 1
+
+		# Fonts
+		self.font = pygame.font.Font(None, 28)
+		self.font_large = pygame.font.Font(None, 36)
 		self.win_dialog = None
 
 	def count_dots(self):
 		count = 0
 		for row in self.maze:
 			for cell in row:
-				if cell == 2:  # 2 = dot
+				if cell == 2:  # 2 = regular dot
 					count += 1
 		return count
+
+	def count_super_dots(self):
+		count = 0
+		for row in self.maze:
+			for cell in row:
+				if cell == 4:  # 4 = super dot
+					count += 1
+		return count
+
+	def spawn_fruit(self):
+		# Find empty spaces to spawn fruit
+		empty_spaces = []
+		for y, row in enumerate(self.maze):
+			for x, cell in enumerate(row):
+				if cell == 0:  # Empty space
+					empty_spaces.append((x, y))
+
+		if empty_spaces:
+			x, y = random.choice(empty_spaces)
+			self.current_fruit = Fruit(x, y)
 
 	def draw_maze(self):
 		for y, row in enumerate(self.maze):
@@ -421,59 +550,118 @@ class Game:
 
 				if cell == 1:  # Wall
 					pygame.draw.rect(self.screen, BLUE, rect)
-				elif cell == 2:  # Dot
+				elif cell == 2:  # Regular dot
 					pygame.draw.rect(self.screen, BLACK, rect)
 					center_x = x * CELL_SIZE + CELL_SIZE // 2
 					center_y = y * CELL_SIZE + CELL_SIZE // 2
 					pygame.draw.circle(self.screen, WHITE, (center_x, center_y), 3)
+				elif cell == 4:  # Super dot (power pellet)
+					pygame.draw.rect(self.screen, BLACK, rect)
+					center_x = x * CELL_SIZE + CELL_SIZE // 2
+					center_y = y * CELL_SIZE + CELL_SIZE // 2
+					pygame.draw.circle(self.screen, WHITE, (center_x, center_y), 8)
+					pygame.draw.circle(self.screen, YELLOW, (center_x, center_y), 6)
 				else:  # Empty space
 					pygame.draw.rect(self.screen, BLACK, rect)
 
-	def collect_dot(self):
-		if self.maze[self.pacman.y][self.pacman.x] == 2:
-			self.maze[self.pacman.y][self.pacman.x] = 0  # Remove dot
+		# Draw fruit if it exists
+		if self.current_fruit and not self.current_fruit.is_expired():
+			self.current_fruit.draw(self.screen)
+		elif self.current_fruit and self.current_fruit.is_expired():
+			self.current_fruit = None
+
+	def collect_items(self):
+		cell = self.maze[self.pacman.y][self.pacman.x]
+
+		if cell == 2:  # Regular dot
+			self.maze[self.pacman.y][self.pacman.x] = 0
 			self.score += 10
 			self.dots_remaining -= 1
 
-			if self.dots_remaining == 0:
-				self.won = True
-				self.show_win_dialog = True
-				self.win_dialog = WinDialog(self.screen, self.score)
+		elif cell == 4:  # Super dot (power pellet)
+			self.maze[self.pacman.y][self.pacman.x] = 0
+			self.score += 50
+			self.super_dots_remaining -= 1
+			# Make all ghosts vulnerable
+			for ghost in self.ghosts:
+				ghost.set_vulnerable(200)  # 200 frames = ~13 seconds
+			self.ghost_eat_multiplier = 1  # Reset multiplier
+
+		# Check for fruit collection
+		if (self.current_fruit and
+			self.pacman.x == self.current_fruit.x and
+			self.pacman.y == self.current_fruit.y):
+			self.score += self.current_fruit.get_points()
+			self.current_fruit = None
+
+		# Check win condition
+		if self.dots_remaining == 0 and self.super_dots_remaining == 0:
+			self.won = True
+			self.show_win_dialog = True
+			self.win_dialog = WinDialog(self.screen, self.score)
 
 	def check_ghost_collision(self):
-		for ghost in self.ghosts:
+		for i, ghost in enumerate(self.ghosts):
 			if ghost.x == self.pacman.x and ghost.y == self.pacman.y:
-				self.game_over = True
-				return True
+				if ghost.vulnerable and not ghost.eaten:
+					# Eat the ghost!
+					ghost.eaten = True
+					ghost.returning_home = True
+					points = 200 * self.ghost_eat_multiplier
+					self.score += points
+					self.ghost_eat_multiplier *= 2  # Double points for next ghost
+					return False  # Don't end game
+				elif not ghost.vulnerable:
+					self.game_over = True
+					return True
 		return False
 
+	def update_fruit_spawning(self):
+		self.fruit_spawn_timer += 1
+		if self.fruit_spawn_timer >= self.fruit_spawn_interval and not self.current_fruit:
+			self.spawn_fruit()
+			self.fruit_spawn_timer = 0
+
 	def draw_ui(self):
+		# UI area background
+		ui_y = len(self.maze) * CELL_SIZE
+		pygame.draw.rect(self.screen, GRAY, (0, ui_y, WINDOW_WIDTH, WINDOW_HEIGHT - ui_y))
+
 		# Score
-		score_text = self.font.render(f"Score: {self.score}", True, WHITE)
-		self.screen.blit(score_text, (10, len(self.maze) * CELL_SIZE + 10))
+		score_text = self.font_large.render(f"SCORE: {self.score}", True, WHITE)
+		self.screen.blit(score_text, (20, ui_y + 10))
+
+		# Level
+		level_text = self.font_large.render(f"LEVEL: {self.level}", True, WHITE)
+		self.screen.blit(level_text, (250, ui_y + 10))
 
 		# Dots remaining
-		dots_text = self.font.render(f"Dots: {self.dots_remaining}", True, WHITE)
-		self.screen.blit(dots_text, (200, len(self.maze) * CELL_SIZE + 10))
+		dots_text = self.font.render(f"Dots: {self.dots_remaining} | Super Dots: {self.super_dots_remaining}", True, WHITE)
+		self.screen.blit(dots_text, (450, ui_y + 15))
 
 		if self.game_over:
 			# Game over message
 			game_over_text = self.font.render("GAME OVER! Press R to restart or ESC to quit", True, RED)
-			self.screen.blit(game_over_text, (10, len(self.maze) * CELL_SIZE + 50))
+			self.screen.blit(game_over_text, (20, ui_y + 45))
 		elif not self.show_win_dialog:
 			# Instructions
-			instruction_text = self.font.render("Use arrow keys or WASD to move! Avoid the smart ghosts!", True, WHITE)
-			self.screen.blit(instruction_text, (10, len(self.maze) * CELL_SIZE + 50))
+			instruction_text = self.font.render("WASD/Arrows: Move | Collect power pellets to eat ghosts! | Fruits give bonus points!", True, WHITE)
+			self.screen.blit(instruction_text, (20, ui_y + 45))
 
 	def restart_game(self):
 		self.pacman = PacMan()
 		self.maze = [row[:] for row in MAZE]
 		self.score = 0
+		self.level = 1
 		self.dots_remaining = self.count_dots()
+		self.super_dots_remaining = self.count_super_dots()
 		self.game_over = False
 		self.won = False
 		self.show_win_dialog = False
 		self.win_dialog = None
+		self.current_fruit = None
+		self.fruit_spawn_timer = 0
+		self.ghost_eat_multiplier = 1
 
 		# Reset ghosts
 		self.ghosts = [
@@ -512,7 +700,7 @@ class Game:
 			moved = self.pacman.move(0, 1, self.maze)
 
 		if moved:
-			self.collect_dot()
+			self.collect_items()
 
 	def run(self):
 		running = True
@@ -541,6 +729,9 @@ class Game:
 
 				# Update Pac-Man animation
 				self.pacman.update()
+
+				# Update fruit spawning
+				self.update_fruit_spawning()
 
 				# Move ghosts with smart AI
 				for ghost in self.ghosts:
